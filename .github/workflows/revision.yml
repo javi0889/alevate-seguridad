@@ -1,0 +1,88 @@
+# Workflow reutilizable de Alevate Studio: secretos (gitleaks), dependencias (npm audit)
+# y cabeceras de seguridad. Se llama desde cualquier repo (javi0889 o saencopra-spec):
+#
+#   jobs:
+#     seguridad:
+#       uses: javi0889/alevate-seguridad/.github/workflows/revision.yml@main
+#       with:
+#         url: https://dominio-del-cliente.com   # opcional
+#
+# No usa secretos: los logs quedan en el repo que lo llama (privado).
+name: Revisión de seguridad
+
+on:
+  workflow_call:
+    inputs:
+      url:
+        description: URL publicada para revisar cabeceras (vacío = no se revisa)
+        type: string
+        default: ''
+      nivel-audit:
+        description: Nivel de npm audit que hace fallar (low, moderate, high, critical)
+        type: string
+        default: high
+      directorio:
+        description: Carpeta con package-lock.json
+        type: string
+        default: '.'
+
+permissions:
+  contents: read
+
+jobs:
+  secretos:
+    name: Secretos (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Instalar gitleaks 8.30.1 (con checksum)
+        run: |
+          set -euo pipefail
+          V=8.30.1
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_checksums.txt"
+          grep "gitleaks_${V}_linux_x64.tar.gz" "gitleaks_${V}_checksums.txt" | sha256sum -c -
+          tar -xzf "gitleaks_${V}_linux_x64.tar.gz" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Buscar secretos en todo el historial
+        # --redact: nunca imprime el valor del secreto, solo archivo, línea y regla.
+        run: gitleaks git --redact --no-banner --exit-code 1 .
+
+  dependencias:
+    name: Dependencias (npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: npm audit
+        working-directory: ${{ inputs.directorio }}
+        env:
+          NIVEL: ${{ inputs.nivel-audit }}
+        run: |
+          if [ ! -f package-lock.json ]; then echo "Sin package-lock.json: nada que revisar."; exit 0; fi
+          npm audit --package-lock-only --audit-level="$NIVEL"
+
+  cabeceras:
+    name: Cabeceras de seguridad
+    if: inputs.url != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: javi0889/alevate-seguridad
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Verificar cabeceras
+        env:
+          URL: ${{ inputs.url }}
+        run: node scripts/verificar-cabeceras.mjs "$URL"

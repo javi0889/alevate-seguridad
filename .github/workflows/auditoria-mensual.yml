@@ -1,0 +1,65 @@
+# Auditoría mensual: día 1 de cada mes, 8:00 a. m. de Costa Rica (14:00 UTC).
+# Repo público → los logs son públicos: el script solo imprime totales.
+# Secretos necesarios (Settings → Secrets and variables → Actions), ver README:
+#   TOKEN_JAVIER, TOKEN_FRANCO, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+name: Auditoría mensual
+
+on:
+  schedule:
+    - cron: '0 14 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auditoria-mensual
+  cancel-in-progress: false
+
+jobs:
+  auditar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: saencopra-spec/alevate-vault
+          token: ${{ secrets.TOKEN_FRANCO }}
+          path: vault
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Instalar gitleaks 8.30.1 (con checksum)
+        run: |
+          set -euo pipefail
+          V=8.30.1
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz"
+          curl -sSfLO "https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_checksums.txt"
+          grep "gitleaks_${V}_linux_x64.tar.gz" "gitleaks_${V}_checksums.txt" | sha256sum -c - > /dev/null
+          tar -xzf "gitleaks_${V}_linux_x64.tar.gz" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Auditar
+        id: auditar
+        continue-on-error: true
+        env:
+          VAULT_DIR: vault
+          TOKEN_JAVIER: ${{ secrets.TOKEN_JAVIER }}
+          TOKEN_FRANCO: ${{ secrets.TOKEN_FRANCO }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node auditoria/auditar.mjs
+      - name: Guardar el reporte en el vault
+        working-directory: vault
+        run: |
+          git config user.name "alevate-auditoria"
+          git config user.email "auditoria@users.noreply.github.com"
+          git add 11-Seguridad-Legal/auditorias/
+          git diff --cached --quiet || git commit -q -m "Auditoría mensual $(date -u +%F)"
+          git pull -q --rebase && git push -q
+      - name: Marcar en rojo si hubo críticos
+        if: steps.auditar.outcome == 'failure'
+        run: exit 1
