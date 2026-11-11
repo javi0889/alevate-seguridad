@@ -1,20 +1,27 @@
-# Auditoría mensual: día 1 de cada mes, 8:00 a. m. de Costa Rica (14:00 UTC).
-# Repo público → los logs son públicos: el script solo imprime totales.
-# Secretos necesarios (Settings → Secrets and variables → Actions), ver README:
-#   TOKEN_JAVIER, TOKEN_FRANCO, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-name: Auditoría mensual
+# Auditoría (workflow REUTILIZABLE). No corre en este repo público: lo llama el repo
+# privado javi0889/alevate-auditoria con su cron mensual, y los registros y secretos
+# quedan allá. Aun así, el script solo imprime totales: nada de repos, rutas ni hallazgos.
+name: Auditoría
 
 on:
-  schedule:
-    - cron: '0 14 1 * *'
-  workflow_dispatch:
+  workflow_call:
+    secrets:
+      TOKEN_JAVIER:
+        description: Fine-grained de javi0889, Contents read en sus repos auditados
+        required: true
+      TOKEN_FRANCO:
+        description: Fine-grained de saencopra-spec, Contents read en sus repos auditados
+        required: true
+      TOKEN_VAULT:
+        description: Fine-grained de saencopra-spec, Contents read/write solo en alevate-vault
+        required: true
+      TELEGRAM_BOT_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
 
 permissions:
   contents: read
-
-concurrency:
-  group: auditoria-mensual
-  cancel-in-progress: false
 
 jobs:
   auditar:
@@ -23,11 +30,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: javi0889/alevate-seguridad
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: saencopra-spec/alevate-vault
-          token: ${{ secrets.TOKEN_FRANCO }}
+          token: ${{ secrets.TOKEN_VAULT }}
           path: vault
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -49,6 +57,7 @@ jobs:
           VAULT_DIR: vault
           TOKEN_JAVIER: ${{ secrets.TOKEN_JAVIER }}
           TOKEN_FRANCO: ${{ secrets.TOKEN_FRANCO }}
+          TOKEN_VAULT: ${{ secrets.TOKEN_VAULT }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: node auditoria/auditar.mjs
@@ -62,4 +71,6 @@ jobs:
           git pull -q --rebase && git push -q
       - name: Marcar en rojo si hubo críticos
         if: steps.auditar.outcome == 'failure'
-        run: exit 1
+        run: |
+          echo "Hay hallazgos críticos: ver el reporte en el vault."
+          exit 1

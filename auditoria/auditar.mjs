@@ -1,9 +1,11 @@
-// Auditoría mensual de Alevate Studio.
+﻿// Auditoría mensual de Alevate Studio.
 // Lee la lista de repos del vault (privado), revisa secretos, dependencias y cabeceras,
 // escribe el reporte en el vault y avisa por Telegram si hay hallazgos críticos.
 //
-// ESTE REPO ES PÚBLICO y sus logs de Actions también: el script NO imprime nombres de repos,
-// rutas ni hallazgos. Solo totales. El detalle va únicamente al reporte del vault.
+// El código es público (alevate-seguridad) y corre desde el repo privado alevate-auditoria.
+// Igual el script NO imprime nombres de repos, rutas ni hallazgos: solo totales.
+// El detalle va únicamente al reporte del vault. Errores de git/npm no se muestran
+// (pueden traer la URL con el token).
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +14,7 @@ import { join } from 'node:path';
 const VAULT = process.env.VAULT_DIR || 'vault';
 const LISTA = join(VAULT, '11-Seguridad-Legal/auditorias/repos.json');
 const SALIDA = join(VAULT, '11-Seguridad-Legal/auditorias');
-const tokens = { javier: process.env.TOKEN_JAVIER, franco: process.env.TOKEN_FRANCO };
+const tokens = { javier: process.env.TOKEN_JAVIER, franco: process.env.TOKEN_FRANCO, vault: process.env.TOKEN_VAULT };
 const hoy = new Date().toISOString().slice(0, 10);
 
 const correr = (cmd, args, opts = {}) => {
@@ -22,6 +24,12 @@ const correr = (cmd, args, opts = {}) => {
     return { ok: false, out: String(e.stdout || ''), code: e.status };
   }
 };
+
+// Cualquier error no previsto se reporta sin detalle: su mensaje podría traer rutas,
+// nombres de repos o fragmentos de archivos.
+const fallar = () => { console.log('La auditoría falló por un error interno (detalle omitido a propósito).'); process.exit(2); };
+process.on('uncaughtException', fallar);
+process.on('unhandledRejection', fallar);
 
 const hallazgos = []; // { severidad, repo, tipo, detalle }
 const agregar = (severidad, repo, tipo, detalle) => hallazgos.push({ severidad, repo, tipo, detalle });
@@ -38,7 +46,10 @@ async function revisarRepo({ repo, token, url, directorio = '.' }) {
     const informe = join(dir, '..', `${repo.replace('/', '_')}-gitleaks.json`);
     correr('gitleaks', ['git', '--redact', '--no-banner', '--exit-code', '0', '--report-format', 'json', '--report-path', informe, dir]);
     if (existsSync(informe)) {
-      for (const f of JSON.parse(readFileSync(informe, 'utf8') || '[]')) {
+      let encontrados = [];
+      try { encontrados = JSON.parse(readFileSync(informe, 'utf8') || '[]'); }
+      catch { agregar('alto', repo, 'auditoría', 'No se pudo leer el informe de gitleaks'); }
+      for (const f of encontrados) {
         agregar('crítico', repo, 'secreto', `${f.RuleID} en \`${f.File}\` línea ${f.StartLine} (commit ${String(f.Commit).slice(0, 7)}) — **rotar la llave**, no copiar el valor`);
       }
       rmSync(informe, { force: true });
@@ -106,7 +117,7 @@ medios: ${conteo.medio}
 bajos: ${conteo.bajo}
 ---
 # Auditoría mensual ${hoy}
-#seguridad · Volver a [[00-Indice]] · Generada por \`javi0889/alevate-seguridad\` (Actions)
+#seguridad · Volver a [[00-Indice]] · Generada por \`javi0889/alevate-auditoria\` (Actions)
 
 **Resumen:** ${conteo['crítico']} críticos · ${conteo.alto} altos · ${conteo.medio} medios · ${conteo.bajo} bajos · ${lista.length} repos revisados.
 
