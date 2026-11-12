@@ -13,7 +13,7 @@ const PATRONES = [
   ['llave privada', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ['token de GitHub', /\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b/],
   ['llave de Anthropic', /\bsk-ant-[A-Za-z0-9_-]{20,}/],
-  ['llave de OpenAI', /\bsk-(proj-)?[A-Za-z0-9_-]{32,}/],
+  ['llave de OpenAI', /\bsk-(?!ant-)(proj-)?[A-Za-z0-9_-]{32,}/],
   ['llave de AWS', /\bAKIA[0-9A-Z]{16}\b/],
   ['llave de Google', /\bAIza[0-9A-Za-z_-]{35}\b/],
   ['llave de Stripe', /\b[sr]k_live_[0-9A-Za-z]{20,}/],
