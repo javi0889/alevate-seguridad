@@ -1,11 +1,15 @@
-﻿// Auditoría mensual de Alevate Studio.
+// Auditoría mensual de Alevate Studio.
 // Lee la lista de repos del vault (privado), revisa secretos, dependencias y cabeceras,
 // escribe el reporte en el vault y avisa por Telegram si hay hallazgos críticos.
 //
 // El código es público (alevate-seguridad) y corre desde el repo privado alevate-auditoria.
 // Igual el script NO imprime nombres de repos, rutas ni hallazgos: solo totales.
 // El detalle va únicamente al reporte del vault. Errores de git/npm no se muestran
-// (pueden traer la URL con el token).
+// (pueden traer la URL con el token). El token nunca va en la URL ni en argumentos:
+// se pasa a git como cabecera por variables de entorno, y Actions además lo enmascara.
+//
+// Lista de repos: REPOS_JSON (la pasa el repo privado) o, si no, repos.json del vault.
+// Si falta el token de un repo, ese repo se salta y queda anotado en el reporte.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,8 +17,11 @@ import { join } from 'node:path';
 
 const VAULT = process.env.VAULT_DIR || 'vault';
 const LISTA = join(VAULT, '11-Seguridad-Legal/auditorias/repos.json');
-const SALIDA = join(VAULT, '11-Seguridad-Legal/auditorias');
-const tokens = { javier: process.env.TOKEN_JAVIER, franco: process.env.TOKEN_FRANCO, vault: process.env.TOKEN_VAULT };
+const SALIDA = process.env.REPORTE_DIR || join(VAULT, '11-Seguridad-Legal/auditorias');
+const e = process.env;
+// TOKEN_AUDITORIA (clásico, a futuro) cubre cualquier repo sin token propio.
+const tokens = { javier: e.TOKEN_JAVIER, franco: e.TOKEN_FRANCO, vault: e.TOKEN_VAULT };
+const tokenDe = (nombre) => tokens[nombre] || e.TOKEN_AUDITORIA || '';
 const hoy = new Date().toISOString().slice(0, 10);
 
 const correr = (cmd, args, opts = {}) => {
@@ -32,14 +39,19 @@ process.on('uncaughtException', fallar);
 process.on('unhandledRejection', fallar);
 
 const hallazgos = []; // { severidad, repo, tipo, detalle }
+const omitidos = []; // { repo, motivo }
 const agregar = (severidad, repo, tipo, detalle) => hallazgos.push({ severidad, repo, tipo, detalle });
 
 async function revisarRepo({ repo, token, url, directorio = '.' }) {
   const dir = mkdtempSync(join(tmpdir(), 'aud-'));
   try {
-    const t = tokens[token];
-    if (!t) { agregar('alto', repo, 'auditoría', `Falta el token "${token}" para clonar`); return; }
-    const clon = correr('git', ['clone', '--quiet', `https://x-access-token:${t}@github.com/${repo}.git`, dir]);
+    const t = tokenDe(token);
+    if (!t) { omitidos.push({ repo, motivo: `sin token "${token}" (se suma con TOKEN_AUDITORIA)` }); return; }
+    const auth = Buffer.from(`x-access-token:${t}`).toString('base64');
+    const clon = correr('git', ['clone', '--quiet', `https://github.com/${repo}.git`, dir], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader', GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${auth}` },
+    });
     if (!clon.ok) { agregar('alto', repo, 'auditoría', 'No se pudo clonar (¿token vencido o sin acceso?)'); return; }
 
     // Secretos: --redact para que el reporte nunca tenga el valor.
@@ -94,8 +106,9 @@ async function revisarSitio(repo, url) {
 }
 
 const orden = ['crítico', 'alto', 'medio', 'bajo'];
-const lista = JSON.parse(readFileSync(LISTA, 'utf8'));
+const lista = JSON.parse(e.REPOS_JSON || readFileSync(LISTA, 'utf8'));
 for (const item of lista) await revisarRepo(item);
+const revisados = lista.length - omitidos.length;
 
 const conteo = Object.fromEntries(orden.map((s) => [s, hallazgos.filter((h) => h.severidad === s).length]));
 const filas = hallazgos
@@ -119,16 +132,16 @@ bajos: ${conteo.bajo}
 # Auditoría mensual ${hoy}
 #seguridad · Volver a [[00-Indice]] · Generada por \`javi0889/alevate-auditoria\` (Actions)
 
-**Resumen:** ${conteo['crítico']} críticos · ${conteo.alto} altos · ${conteo.medio} medios · ${conteo.bajo} bajos · ${lista.length} repos revisados.
+**Resumen:** ${conteo['crítico']} críticos · ${conteo.alto} altos · ${conteo.medio} medios · ${conteo.bajo} bajos · ${revisados} de ${lista.length} repos revisados.
 
-${filas.length ? '| Severidad | Repo | Tipo | Detalle |\n|---|---|---|---|\n' + filas.join('\n') : 'Sin hallazgos. ✅'}
+${omitidos.length ? '**Omitidos (no cuentan como hallazgo):**\n' + omitidos.map((o) => `- ${o.repo}: ${o.motivo}`).join('\n') + '\n\n' : ''}${filas.length ? '| Severidad | Repo | Tipo | Detalle |\n|---|---|---|---|\n' + filas.join('\n') : 'Sin hallazgos. ✅'}
 
 > Los secretos se reportan sin su valor. Si aparece uno: rotarlo primero → [[seguridad/secretos-y-api-keys]].
 `;
 mkdirSync(SALIDA, { recursive: true });
 writeFileSync(join(SALIDA, `${hoy}-auditoria-mensual.md`), reporte);
 
-console.log(`Repos: ${lista.length} · críticos ${conteo['crítico']} · altos ${conteo.alto} · medios ${conteo.medio} · bajos ${conteo.bajo}`);
+console.log(`Repos: ${revisados} revisados, ${omitidos.length} omitidos · críticos ${conteo['crítico']} · altos ${conteo.alto} · medios ${conteo.medio} · bajos ${conteo.bajo}`);
 
 const { TELEGRAM_BOT_TOKEN: bot, TELEGRAM_CHAT_ID: chat } = process.env;
 if (bot && chat) {
